@@ -1,5 +1,5 @@
 use bytes::Buf;
-use http_body::Body;
+use http_body::{Body, Frame};
 use pin_project_lite::pin_project;
 use std::{
     any::type_name,
@@ -56,24 +56,24 @@ where
     type Data = B2;
     type Error = B::Error;
 
-    fn poll_data(
+    fn poll_frame(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.project();
-        match this.inner.poll_data(cx) {
+        match this.inner.poll_frame(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(Ok(data))) => Poll::Ready(Some(Ok((this.f)(data)))),
+            Poll::Ready(Some(Ok(frame))) if frame.is_data() => {
+                Poll::Ready(Some(Ok(Frame::data((this.f)(frame.into_data())))))
+            }
+            Poll::Ready(Some(Ok(_other))) => {
+                //Poll::Ready(Some(Ok(other)))
+                // need to "map" the frame generic...
+                todo!("MapData poll_frame other frames")
+            }
             Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
         }
-    }
-
-    fn poll_trailers(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<http::HeaderMap>, Self::Error>> {
-        self.project().inner.poll_trailers(cx)
     }
 
     fn is_end_stream(&self) -> bool {

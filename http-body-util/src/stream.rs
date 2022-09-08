@@ -1,7 +1,6 @@
 use bytes::Buf;
 use futures_util::stream::Stream;
-use http::HeaderMap;
-use http_body::Body;
+use http_body::{Body, Frame};
 use pin_project_lite::pin_project;
 use std::{
     pin::Pin,
@@ -26,24 +25,22 @@ impl<S> StreamBody<S> {
 
 impl<S, D, E> Body for StreamBody<S>
 where
+    // === REVIEW: should this be a Stream of Frames, or Data? ===
     S: Stream<Item = Result<D, E>>,
     D: Buf,
 {
     type Data = D;
     type Error = E;
 
-    fn poll_data(
+    fn poll_frame(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
-        self.project().stream.poll_next(cx)
-    }
-
-    fn poll_trailers(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<HeaderMap>, Self::Error>> {
-        Poll::Ready(Ok(None))
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.project().stream.poll_next(cx) {
+            Poll::Ready(Some(result)) => Poll::Ready(Some(result.map(Frame::data))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -61,9 +58,8 @@ impl<S: Stream> Stream for StreamBody<S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::StreamBody;
+    use crate::{BodyExt, StreamBody};
     use bytes::Bytes;
-    use http_body::Body;
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -76,10 +72,19 @@ mod tests {
         let stream = futures_util::stream::iter(chunks);
         let mut body = StreamBody::new(stream);
 
-        assert_eq!(body.data().await.unwrap().unwrap().as_ref(), [1]);
-        assert_eq!(body.data().await.unwrap().unwrap().as_ref(), [2]);
-        assert_eq!(body.data().await.unwrap().unwrap().as_ref(), [3]);
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().as_ref(),
+            [1]
+        );
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().as_ref(),
+            [2]
+        );
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().as_ref(),
+            [3]
+        );
 
-        assert!(body.data().await.is_none());
+        assert!(body.frame().await.is_none());
     }
 }
